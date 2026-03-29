@@ -3,9 +3,15 @@ from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
-TELEGRAM_BOT_TOKEN = "8770965601:AAG-adHrQ__9zKKvKuQ2zkjN-_cLJBOZINc"
+print("OPENAI_API_KEY exists:", bool(os.getenv("OPENAI_API_KEY")))
+print("TELEGRAM_BOT_TOKEN exists:", bool(os.getenv("TELEGRAM_BOT_TOKEN")))
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("Не найдена переменная окружения TELEGRAM_BOT_TOKEN")
+
 if not OPENAI_API_KEY:
     raise ValueError("Не найдена переменная окружения OPENAI_API_KEY")
 
