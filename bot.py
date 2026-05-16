@@ -66,7 +66,9 @@ def find_word(normalized_word: str, chat_id: int):
                 """
                 SELECT word, message_id
                 FROM vocab_words
-                WHERE normalized_word = %s AND chat_id = %s
+                WHERE normalized_word = %s
+                AND chat_id = %s
+                AND is_active = TRUE
                 LIMIT 1;
                 """,
                 (normalized_word, chat_id),
