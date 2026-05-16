@@ -1,13 +1,17 @@
+import json
 import os
+from pathlib import Path
+
 from openai import OpenAI
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
 print("OPENAI_API_KEY exists:", bool(os.getenv("OPENAI_API_KEY")))
 print("TELEGRAM_BOT_TOKEN exists:", bool(os.getenv("TELEGRAM_BOT_TOKEN")))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+WORDS_INDEX_FILE = Path("vocab_words.json")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Не найдена переменная окружения TELEGRAM_BOT_TOKEN")
@@ -16,6 +20,42 @@ if not OPENAI_API_KEY:
     raise ValueError("Не найдена переменная окружения OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+def normalize_word(word: str) -> str:
+    return " ".join(word.casefold().split())
+
+
+def load_words_index() -> dict:
+    if not WORDS_INDEX_FILE.exists():
+        return {}
+
+    try:
+        with WORDS_INDEX_FILE.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError) as e:
+        print("Не удалось прочитать индекс слов:", e)
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    return data
+
+
+def save_words_index(words_index: dict) -> None:
+    try:
+        with WORDS_INDEX_FILE.open("w", encoding="utf-8") as file:
+            json.dump(words_index, file, ensure_ascii=False, indent=2)
+    except OSError as e:
+        print("Не удалось сохранить индекс слов:", e)
+
+
+async def delete_message(message) -> None:
+    try:
+        await message.delete()
+    except Exception as e:
+        print(f"Не удалось удалить сообщение: {e}")
 
 
 def ai_process(word: str) -> dict | None:
@@ -81,11 +121,29 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not word:
         return
 
+    words_index = load_words_index()
+    normalized_word = normalize_word(word)
+
+    if normalized_word in words_index:
+        saved_word = words_index[normalized_word]
+        reply_to_message_id = saved_word.get("message_id")
+        display_word = saved_word.get("word", word)
+
+        await delete_message(message)
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Слово «{display_word}» уже есть в списке.",
+            reply_to_message_id=reply_to_message_id,
+            allow_sending_without_reply=True,
+        )
+        return
+
     data = ai_process(word)
     if not data:
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text="Не удалось обработать слово через AI."
+            text="Не удалось обработать слово через AI.",
         )
         return
 
@@ -96,15 +154,18 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         f" Перевод: {data['definition_ru']}"
     )
 
-    try:
-        await message.delete()
-    except Exception as e:
-        print(f"Не удалось удалить сообщение: {e}")
+    await delete_message(message)
 
-    await context.bot.send_message(
+    sent_message = await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=result_text
+        text=result_text,
     )
+
+    words_index[normalized_word] = {
+        "word": data["word"],
+        "message_id": sent_message.message_id,
+    }
+    save_words_index(words_index)
 
 
 def main() -> None:
