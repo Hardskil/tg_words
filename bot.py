@@ -11,7 +11,7 @@ print("TELEGRAM_BOT_TOKEN exists:", bool(os.getenv("TELEGRAM_BOT_TOKEN")))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-WORDS_INDEX_FILE = Path("vocab_words.json")
+WORDS_INDEX_FILE = Path(__file__).with_name("vocab_words.json")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("Не найдена переменная окружения TELEGRAM_BOT_TOKEN")
@@ -56,6 +56,36 @@ async def delete_message(message) -> None:
         await message.delete()
     except Exception as e:
         print(f"Не удалось удалить сообщение: {e}")
+
+
+async def send_duplicate_word_message(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    display_word: str,
+    reply_to_message_id: int | None,
+) -> None:
+    text = f"Слово «{display_word}» уже есть в списке."
+
+    if not reply_to_message_id:
+        await context.bot.send_message(chat_id=chat_id, text=text)
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_to_message_id=reply_to_message_id,
+            allow_sending_without_reply=True,
+        )
+    except TypeError:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_to_message_id=reply_to_message_id,
+        )
+    except Exception as e:
+        print(f"Не удалось отправить reply на повтор слова: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=text)
 
 
 def ai_process(word: str) -> dict | None:
@@ -130,12 +160,11 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         display_word = saved_word.get("word", word)
 
         await delete_message(message)
-
-        await context.bot.send_message(
+        await send_duplicate_word_message(
+            context=context,
             chat_id=update.effective_chat.id,
-            text=f"Слово «{display_word}» уже есть в списке.",
+            display_word=display_word,
             reply_to_message_id=reply_to_message_id,
-            allow_sending_without_reply=True,
         )
         return
 
@@ -161,10 +190,13 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         text=result_text,
     )
 
-    words_index[normalized_word] = {
+    saved_word = {
         "word": data["word"],
         "message_id": sent_message.message_id,
     }
+
+    words_index[normalized_word] = saved_word
+    words_index[normalize_word(data["word"])] = saved_word
     save_words_index(words_index)
 
 
