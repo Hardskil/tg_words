@@ -95,31 +95,24 @@ def save_word(
             conn.commit()
 
 
+def delete_word(normalized_word: str, chat_id: int) -> None:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM vocab_words
+                WHERE normalized_word = %s AND chat_id = %s;
+                """,
+                (normalized_word, chat_id),
+            )
+            conn.commit()
+
+
 async def delete_message(message) -> None:
     try:
         await message.delete()
     except Exception as e:
         print(f"Не удалось удалить сообщение: {e}")
-
-
-async def send_duplicate_word_message(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    display_word: str,
-    reply_to_message_id: int | None,
-) -> None:
-    text = f"Слово «{display_word}» уже есть в списке."
-
-    try:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_to_message_id=reply_to_message_id,
-            allow_sending_without_reply=True,
-        )
-    except Exception as e:
-        print(f"Не удалось отправить reply на повтор слова: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=text)
 
 
 def ai_process(word: str) -> dict | None:
@@ -180,7 +173,6 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = update.effective_chat.id
     text = message.text.strip()
 
-    # Если это НЕ команда !v, бот просто запоминает сообщение
     if not text.lower().startswith("!v "):
         normalized_text = normalize_word(text)
 
@@ -195,14 +187,12 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         return
 
-    # Если это команда !v
     word = text[3:].strip()
 
     if not word:
         return
 
     normalized_word = normalize_word(word)
-
     existing_word = find_word(normalized_word, chat_id)
 
     if existing_word:
@@ -210,14 +200,18 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         await delete_message(message)
 
-        await send_duplicate_word_message(
-            context=context,
-            chat_id=chat_id,
-            display_word=display_word,
-            reply_to_message_id=old_message_id,
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Слово «{display_word}» уже есть в списке.",
+                reply_to_message_id=old_message_id,
+                allow_sending_without_reply=False,
+            )
+            return
 
-        return
+        except Exception as e:
+            print(f"Старое сообщение не найдено, удаляю слово из БД: {e}")
+            delete_word(normalized_word, chat_id)
 
     data = ai_process(word)
 
@@ -275,6 +269,7 @@ def main() -> None:
     app.add_error_handler(error_handler)
 
     print("Бот запущен...")
+
     app.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
