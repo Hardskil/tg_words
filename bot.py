@@ -52,10 +52,60 @@ def init_db() -> None:
                     message_id BIGINT NOT NULL,
                     chat_id BIGINT NOT NULL,
                     source TEXT DEFAULT 'bot_vocab',
+                    is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (normalized_word, chat_id)
                 );
             """)
+
+            cur.execute("""
+                ALTER TABLE vocab_words
+                ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS bot_chats (
+                    chat_id BIGINT PRIMARY KEY,
+                    chat_type TEXT,
+                    title TEXT,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+
+            conn.commit()
+
+
+def save_chat_info(chat) -> None:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO bot_chats
+                (chat_id, chat_type, title, username, first_name, last_name, is_active, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, TRUE, CURRENT_TIMESTAMP)
+                ON CONFLICT (chat_id) DO UPDATE SET
+                    chat_type = EXCLUDED.chat_type,
+                    title = EXCLUDED.title,
+                    username = EXCLUDED.username,
+                    first_name = EXCLUDED.first_name,
+                    last_name = EXCLUDED.last_name,
+                    is_active = TRUE,
+                    updated_at = CURRENT_TIMESTAMP;
+                """,
+                (
+                    chat.id,
+                    chat.type,
+                    getattr(chat, "title", None),
+                    getattr(chat, "username", None),
+                    getattr(chat, "first_name", None),
+                    getattr(chat, "last_name", None),
+                ),
+            )
             conn.commit()
 
 
@@ -76,21 +126,19 @@ def find_word(normalized_word: str, chat_id: int):
             return cur.fetchone()
 
 
-def save_word(
-    normalized_word: str,
-    word: str,
-    message_id: int,
-    chat_id: int,
-    source: str,
-) -> None:
+def save_word(normalized_word: str, word: str, message_id: int, chat_id: int, source: str) -> None:
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO vocab_words
-                (normalized_word, word, message_id, chat_id, source)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (normalized_word, chat_id) DO NOTHING;
+                (normalized_word, word, message_id, chat_id, source, is_active)
+                VALUES (%s, %s, %s, %s, %s, TRUE)
+                ON CONFLICT (normalized_word, chat_id) DO UPDATE SET
+                    word = EXCLUDED.word,
+                    message_id = EXCLUDED.message_id,
+                    source = EXCLUDED.source,
+                    is_active = TRUE;
                 """,
                 (normalized_word, word, message_id, chat_id, source),
             )
@@ -102,7 +150,8 @@ def delete_word(normalized_word: str, chat_id: int) -> None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                DELETE FROM vocab_words
+                UPDATE vocab_words
+                SET is_active = FALSE
                 WHERE normalized_word = %s AND chat_id = %s;
                 """,
                 (normalized_word, chat_id),
@@ -168,11 +217,14 @@ definition_ru: ...
 
 async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
+    chat = update.effective_chat
 
-    if not message or not message.text:
+    if not message or not message.text or not chat:
         return
 
-    chat_id = update.effective_chat.id
+    save_chat_info(chat)
+
+    chat_id = chat.id
     text = message.text.strip()
 
     if not text.lower().startswith("!v "):
