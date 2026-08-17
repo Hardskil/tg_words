@@ -67,6 +67,32 @@
 
   * { box-sizing: border-box; }
 
+  /* Движение подчинено смыслу: показать, что пересчиталось после клика.
+     Длительности короткие — интерфейс должен ощущаться быстрым. */
+  :root {
+    --ease: cubic-bezier(.2, .7, .3, 1);
+    --dur-fast: .18s;
+    --dur: .38s;
+  }
+
+  /* Уважаем системную настройку: для части людей анимация вызывает
+     тошноту и головокружение, а мигание — риск при светочувствительности. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-delay: 0s !important;
+      transition-duration: .001ms !important;
+    }
+  }
+
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(10px); }
+  }
+
+  @keyframes pop {
+    from { opacity: 0; transform: scale(.9); }
+  }
+
   body {
     margin: 0;
     padding: 1.5rem 1rem 4rem;
@@ -135,8 +161,11 @@
     background: var(--surface);
     color: var(--text-primary);
     cursor: pointer;
+    animation: pop var(--dur-fast) var(--ease);
+    transition: border-color var(--dur-fast) var(--ease);
   }
-  .chip .x { color: var(--text-muted); font-size: 1rem; line-height: 1; }
+  .chip:hover { border-color: var(--text-muted); }
+  .chip .x { color: var(--text-muted); font-size: 1rem; line-height: 1; transition: color var(--dur-fast); }
   .chip:hover .x { color: var(--text-primary); }
   .chip .dim { color: var(--text-muted); }
 
@@ -165,7 +194,21 @@
     padding: 1rem 1.125rem;
   }
   .tile .label { font-size: .8125rem; color: var(--text-secondary); }
-  .tile .value { font-size: 1.75rem; font-weight: 600; margin-top: .25rem; letter-spacing: -.02em; }
+  .tile .value {
+    font-size: 1.75rem; font-weight: 600; margin-top: .25rem; letter-spacing: -.02em;
+    /* Цифры перебираются при пересчёте, поэтому ширина знаков должна быть
+       постоянной — иначе плитка дёргается на каждом кадре. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Появление блоков при первой загрузке. Класс снимается после, чтобы
+     анимация не повторялась на каждом пересчёте по фильтру. */
+  .intro .tile, .intro .card { animation: rise var(--dur) var(--ease) backwards; }
+  .intro .tile:nth-child(2) { animation-delay: .04s; }
+  .intro .tile:nth-child(3) { animation-delay: .08s; }
+  .intro .tile:nth-child(4) { animation-delay: .12s; }
+  .intro .tile:nth-child(5) { animation-delay: .16s; }
+  .intro .card:nth-of-type(n) { animation-delay: .12s; }
 
   /* --- график --- */
   .filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
@@ -179,7 +222,11 @@
     background: transparent;
     color: var(--text-secondary);
     cursor: pointer;
+    transition: background var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease);
   }
+  .filters button:hover { border-color: var(--text-muted); }
 
   .filters button[aria-pressed="true"] {
     background: var(--text-primary);
@@ -223,6 +270,7 @@
     background: none; border: none; padding: .125rem .25rem;
     border-radius: 6px; cursor: pointer; color: var(--text-secondary);
   }
+  button.legend-item { transition: background var(--dur-fast) var(--ease), color var(--dur-fast); }
   button.legend-item:hover { background: var(--hover); }
   button.legend-item[aria-pressed="true"] { color: var(--text-primary); font-weight: 600; }
 
@@ -230,6 +278,8 @@
   .stack { display: flex; gap: 2px; height: 20px; margin-bottom: .875rem; }
   .stack > div:first-child { border-radius: 5px 0 0 5px; }
   .stack > div:last-child { border-radius: 0 5px 5px 0; }
+  /* Доли перетекают при смене фильтра — видно, что именно пересчиталось */
+  .stack > div { flex-grow: 0; transition: flex-grow var(--dur) var(--ease); }
 
   /* --- таблицы --- */
   .scroll { overflow-x: auto; }
@@ -247,16 +297,21 @@
   tbody tr:last-child td { border-bottom: none; }
   td.num { font-variant-numeric: tabular-nums; }
 
-  tbody tr[data-dim] { cursor: pointer; }
+  tbody tr[data-dim] { cursor: pointer; transition: background var(--dur-fast) var(--ease); }
   tbody tr[data-dim]:hover { background: var(--hover); }
   tbody tr[aria-selected="true"] { background: var(--hover); font-weight: 600; }
+  tbody tr { animation: rise var(--dur-fast) var(--ease) backwards; }
 
   .meter { display: flex; align-items: center; gap: .5rem; justify-content: flex-end; }
   .meter-track {
     width: 4.5rem; height: 6px; flex: none;
     background: var(--grid); border-radius: 3px; overflow: hidden;
   }
-  .meter-fill { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
+  .meter-fill {
+    display: block; height: 100%; border-radius: 3px; background: var(--series-1);
+    width: 0;
+    transition: width var(--dur) var(--ease);
+  }
 
   .empty { color: var(--text-muted); font-size: .875rem; }
   .note { color: var(--text-muted); font-size: .75rem; margin: .75rem 0 0; }
@@ -326,11 +381,19 @@
 const SERIES_VARS = ["--series-1", "--series-2"];
 const TOPIC_LIMIT = 20;
 
+// Системная настройка «уменьшить движение» отключает всю анимацию,
+// включая ту, что делается из JS, а не только CSS-переходы.
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const DURATION = 380;
+
 const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const el = (id) => document.getElementById(id);
 const nf = new Intl.NumberFormat("ru-RU");
 
-const fmtInt = (v) => (v == null ? "—" : nf.format(v));
+// Округление обязательно: значение приходит и из перебора цифр, где оно
+// дробное, а в русской локали 634.418 печатается как «634,418» и читается
+// как число совсем другого порядка.
+const fmtInt = (v) => (v == null ? "—" : nf.format(Math.round(v)));
 const fmtPct = (v) => (v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`);
 const fmtSec = (v) => (v == null ? "—" : `${v.toFixed(1).replace(".", ",")} с`);
 
@@ -526,7 +589,7 @@ function buildChart(series) {
     if (!drawable.length) continue;
 
     const d = drawable.map((p, k) => `${k ? "L" : "M"}${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(" ");
-    parts.push(`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2"
+    parts.push(`<path class="series" d="${d}" fill="none" stroke="${s.color}" stroke-width="2"
                       stroke-linejoin="round" stroke-linecap="round"/>`);
 
     if (selected >= 0) {
@@ -652,9 +715,11 @@ function table(columns, rows, dim) {
 
 function meter(value) {
   if (value == null) return "—";
+  // Ширина ставится не здесь, а следующим кадром в animateIn — иначе
+  // элемент рождается уже нужного размера и переходу неоткуда начаться.
   const pct = Math.max(0, Math.min(1, value)) * 100;
   return `<div class="meter"><span>${fmtPct(value)}</span>
-          <span class="meter-track"><span class="meter-fill" style="width:${pct.toFixed(1)}%"></span></span></div>`;
+          <span class="meter-track"><span class="meter-fill" data-w="${pct.toFixed(1)}"></span></span></div>`;
 }
 
 const STAT_COLUMNS = [
@@ -681,7 +746,8 @@ function renderStack(target, dim, order) {
 
   const bar = keys.map((k) => {
     const stat = byKey.get(k);
-    return `<div style="background:${cssVar(palette[k] ?? "--status-neutral")};flex:${stat.questions}"
+    return `<div style="background:${cssVar(palette[k] ?? "--status-neutral")}"
+                 data-flex="${stat.questions}"
                  title="${escapeHtml(k)}: ${fmtInt(stat.questions)}"></div>`;
   }).join("");
 
@@ -721,19 +787,70 @@ function renderChips() {
      <button type="button" class="chip-clear" id="clear-filters">сбросить всё</button>`;
 }
 
+const KPI_DEFS = [
+  { label: "Вопросов", pick: (s) => s.questions, fmt: fmtInt },
+  { label: "Точность", pick: (s) => s.accuracy, fmt: fmtPct },
+  { label: "Среднее время", pick: (s) => s.avgTime, fmt: fmtSec },
+  { label: "Медленных", pick: (s) => s.slow, fmt: fmtInt },
+  { label: "Пропущено", pick: (s) => s.skipped, fmt: fmtInt },
+];
+
+const kpiShown = [];
+
+/* Число перебирается от прежнего значения к новому. Смысл не в красоте:
+   при клике по фильтру так видно, какие показатели изменились и куда,
+   а какие остались прежними. Мгновенная подмена этого не показывает. */
+function animateNumber(node, from, to, fmt) {
+  cancelAnimationFrame(node._raf);
+  clearTimeout(node._timer);
+
+  if (REDUCED || from == null || to == null || from === to) {
+    node.textContent = fmt(to);
+    return;
+  }
+
+  const started = performance.now();
+
+  const finish = () => {
+    cancelAnimationFrame(node._raf);
+    node.textContent = fmt(to);
+  };
+
+  const step = (now) => {
+    const t = Math.min(1, (now - started) / DURATION);
+    const eased = 1 - Math.pow(1 - t, 3);
+
+    node.textContent = fmt(from + (to - from) * eased);
+
+    if (t < 1) node._raf = requestAnimationFrame(step);
+    else finish();
+  };
+
+  node._raf = requestAnimationFrame(step);
+
+  /* Страховка. requestAnimationFrame замирает в фоновой вкладке, и без неё
+     число осталось бы навсегда на промежуточном значении — то есть просто
+     неверным. Таймер досчитывает результат независимо от кадров. */
+  node._timer = setTimeout(finish, DURATION + 120);
+}
+
 function renderKpi() {
   const stat = aggregate(rowsFor(null));
 
-  const tiles = [
-    ["Вопросов", fmtInt(stat.questions)],
-    ["Точность", fmtPct(stat.accuracy)],
-    ["Среднее время", fmtSec(stat.avgTime)],
-    ["Медленных", fmtInt(stat.slow)],
-    ["Пропущено", fmtInt(stat.skipped)],
-  ];
+  // Плитки строятся один раз: если пересобирать разметку, элементы
+  // заменяются новыми и переход числа сыграть просто не на чем.
+  if (!el("kpi").children.length) {
+    el("kpi").innerHTML = KPI_DEFS.map((def) =>
+      `<div class="tile"><div class="label">${def.label}</div><div class="value">—</div></div>`).join("");
+  }
 
-  el("kpi").innerHTML = tiles.map(([label, value]) =>
-    `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div></div>`).join("");
+  KPI_DEFS.forEach((def, i) => {
+    const value = def.pick(stat);
+    const node = el("kpi").children[i].querySelector(".value");
+
+    animateNumber(node, kpiShown[i], value, def.fmt);
+    kpiShown[i] = value;
+  });
 }
 
 function renderTrend() {
@@ -761,6 +878,47 @@ function renderTable(target, dim, titleColumn, sort, limit) {
   return { shown: stats.length, total };
 }
 
+/* Запускает переходы у только что вставленных элементов.
+   Приём общий: элемент рождается в начальном состоянии (нулевая ширина,
+   линия «не нарисована»), и лишь следующим кадром получает целевое —
+   тогда браузеру есть что анимировать. Поставь конечное значение сразу,
+   и перехода не будет вовсе. */
+function animateIn() {
+  const line = el("chart").querySelector("path.series");
+
+  if (line && !REDUCED) {
+    for (const path of el("chart").querySelectorAll("path.series")) {
+      const length = path.getTotalLength();
+      path.style.strokeDasharray = length;
+      path.style.strokeDashoffset = length;
+      path.style.transition = "none";
+    }
+  }
+
+  requestAnimationFrame(() => {
+    for (const fill of document.querySelectorAll(".meter-fill[data-w]")) {
+      fill.style.width = `${fill.dataset.w}%`;
+    }
+
+    for (const segment of document.querySelectorAll(".stack > div[data-flex]")) {
+      segment.style.flexGrow = segment.dataset.flex;
+    }
+
+    if (REDUCED) return;
+
+    for (const path of el("chart").querySelectorAll("path.series")) {
+      path.style.transition = "stroke-dashoffset .6s var(--ease)";
+      path.style.strokeDashoffset = "0";
+    }
+  });
+
+  // Ряды таблиц появляются каскадом, но только первые — иначе длинная
+  // таблица разворачивается заметно дольше, чем читается.
+  document.querySelectorAll("tbody tr").forEach((row, i) => {
+    row.style.animationDelay = i < 8 ? `${i * 25}ms` : "0ms";
+  });
+}
+
 function render() {
   renderChips();
   renderKpi();
@@ -778,6 +936,8 @@ function render() {
   el("topics-note").textContent = topics.total > topics.shown
     ? `Показаны ${topics.shown} самых медленных тем из ${topics.total}.`
     : "Отсортированы по среднему времени. Клик по строке — отфильтровать по теме.";
+
+  animateIn();
 }
 
 // ---------- события ----------
@@ -804,6 +964,7 @@ el("trend-filters").addEventListener("click", (evt) => {
     b.setAttribute("aria-pressed", String(b === button));
   }
   renderTrend();
+  animateIn();
 });
 
 // ---------- загрузка ----------
@@ -833,6 +994,11 @@ el("trend-filters").addEventListener("click", (evt) => {
 
     el("message").classList.add("hidden");
     el("content").classList.remove("hidden");
+
+    // Класс появления снимаем после проигрыша: иначе блоки заново
+    // выезжали бы при каждом пересчёте по фильтру, и это утомляло бы.
+    el("content").classList.add("intro");
+    setTimeout(() => el("content").classList.remove("intro"), 900);
 
     const focus = body.data.kpi?.focus_area;
     el("stamp").textContent =
