@@ -483,6 +483,23 @@ def _parse_journal(grid: Grid) -> dict[str, Any]:
         "daily": daily,
         "daily_by_section": dict(daily_by_section),
         "journal_rows": len(rows),
+        # Сам журнал, построчно. Из него страница пересчитывает все блоки
+        # при фильтрации по клику: готовые суммы для этого не годятся —
+        # в них уже не видно, какие книги и темы попали в конкретный день.
+        # 600 строк это порядка 150 КБ, для браузера незаметно.
+        "rows": [_journal_row(row) for row in rows],
+    }
+
+
+def _journal_row(row: dict[str, str]) -> dict[str, Any]:
+    return {
+        "date": _date(row.get(_key(COL_DATE))),
+        "section": _text(row.get(_key(COL_SECTION))) or "Без раздела",
+        "book": _text(row.get(_key(COL_BOOK))) or "—",
+        "topic": _text(row.get(_key(COL_TOPIC))) or "—",
+        "result": _text(row.get(_key(COL_RESULT))),
+        "speed": _text(row.get(_key(COL_SPEED))),
+        "time": _num(row.get(_key(COL_TIME))),
     }
 
 
