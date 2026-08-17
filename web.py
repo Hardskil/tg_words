@@ -12,7 +12,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
 from sat import auth, config, db
 
@@ -20,6 +26,11 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+
+# httpx на уровне INFO печатает полный URL запроса, а у Telegram токен —
+# часть адреса (/bot<TOKEN>/getMe). В результате токен утекает в логи
+# открытым текстом при каждом обращении.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +50,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SAT витрина", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+@app.exception_handler(config.ConfigError)
+async def config_error_handler(request: Request, exc: config.ConfigError) -> Response:
+    """Отдельный ответ на нехватку настроек.
+
+    Иначе забытая переменная окружения выглядит как обычная пятисотка,
+    и понять причину можно только по трассировке в логах платформы.
+    """
+    logger.error("Сервис настроен не полностью: %s", exc)
+
+    return JSONResponse(
+        status_code=503,
+        content={"detail": f"Сервис настроен не полностью: {exc}"},
+        headers=NO_STORE,
+    )
 
 
 # --- Авторизация ---

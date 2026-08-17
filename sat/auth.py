@@ -182,9 +182,10 @@ async def _fetch_membership(user_id: int) -> bool | None:
     Порядок except важен: в PTB BadRequest и TimedOut наследуются от
     NetworkError, поэтому конкретные случаи должны идти раньше общего.
     """
-    bot = await get_bot()
-
     try:
+        # Создание клиента внутри try: при неверном токене оно бросает
+        # InvalidToken, и снаружи это выглядело бы голой пятисоткой.
+        bot = await get_bot()
         member = await bot.get_chat_member(config.channel_id(), user_id)
     except Forbidden as e:
         # Бот не админ канала — проверить подписку невозможно в принципе.

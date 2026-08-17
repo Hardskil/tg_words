@@ -12,6 +12,11 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
+# httpx на уровне INFO печатает полный URL запроса, а у Telegram токен —
+# часть адреса (/bot<TOKEN>/sendMessage). Без этого токен утекает в логи
+# открытым текстом при каждом обращении к API.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
