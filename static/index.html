@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>SAT статистика</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:           #f9f9f7;
+    --surface:        #fcfcfb;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11, 11, 11, .10);
+
+    /* Ряды графика. Проверено валидатором: CVD dE 24.7, normal dE 33.6 */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+
+    /* Упорядоченная шкала скорости: один тон, светлее -> темнее */
+    --speed-fast:   #86b6ef;
+    --speed-normal: #3987e5;
+    --speed-slow:   #184f95;
+
+    /* Статусные цвета: тут цвет действительно означает хорошо/плохо */
+    --status-good:     #0ca30c;
+    --status-critical: #d03b3b;
+    --status-neutral:  #898781;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:           #0d0d0d;
+      --surface:        #1a1a19;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255, 255, 255, .10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:           #0d0d0d;
+    --surface:        #1a1a19;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255, 255, 255, .10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 1.5rem 1rem 4rem;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  main { max-width: 68rem; margin: 0 auto; }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem 1rem;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 1.75rem;
+  }
+
+  h1 { margin: 0; font-size: 1.375rem; letter-spacing: -.01em; }
+
+  .stamp { color: var(--text-muted); font-size: .8125rem; }
+  .stamp a { color: var(--text-muted); margin-left: .75rem; }
+
+  h2 {
+    margin: 0 0 1rem;
+    font-size: .9375rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+  }
+
+  .cols { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  @media (min-width: 46rem) { .cols { grid-template-columns: 1fr 1fr; } }
+
+  /* --- KPI --- */
+  /* Раздельные плитки, а не сетка с фоном-разделителем: пятая плитка
+     не заполняет последний ряд, и при фоновом трюке оставалась бы
+     пустая серая ячейка, похожая на сломанную. */
+  .kpi {
+    display: grid;
+    gap: .625rem;
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    margin-bottom: 1rem;
+  }
+
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.125rem;
+  }
+  .tile .label { font-size: .8125rem; color: var(--text-secondary); }
+  .tile .value { font-size: 1.75rem; font-weight: 600; margin-top: .25rem; letter-spacing: -.02em; }
+  .tile .value.text { font-size: 1.125rem; padding-top: .5rem; }
+
+  /* --- график --- */
+  .filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+
+  .filters button, .linkish {
+    font: inherit;
+    font-size: .8125rem;
+    padding: .3125rem .75rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  .filters button[aria-pressed="true"] {
+    background: var(--text-primary);
+    color: var(--surface);
+    border-color: var(--text-primary);
+  }
+
+  .plot { position: relative; }
+  svg { display: block; width: 100%; height: auto; }
+
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .1s;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .5rem .625rem;
+    font-size: .8125rem;
+    white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    z-index: 5;
+  }
+  .tooltip.on { opacity: 1; }
+  .tooltip .t-date { color: var(--text-muted); margin-bottom: .25rem; }
+  .tooltip .t-row { display: flex; align-items: center; gap: .4rem; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin-top: .75rem; }
+  .legend-item {
+    display: flex; align-items: center; gap: .4rem;
+    font-size: .8125rem; color: var(--text-secondary);
+  }
+  .swatch { width: .625rem; height: .625rem; border-radius: 3px; flex: none; }
+  .swatch.line { width: 1rem; height: 2px; border-radius: 2px; }
+
+  /* --- составная полоса --- */
+  .stack { display: flex; gap: 2px; height: 20px; margin-bottom: .875rem; }
+  .stack > div:first-child { border-radius: 5px 0 0 5px; }
+  .stack > div:last-child { border-radius: 0 5px 5px 0; }
+  .stack > div { cursor: default; }
+
+  /* --- таблицы --- */
+  .scroll { overflow-x: auto; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .8125rem; }
+
+  th, td {
+    text-align: right;
+    padding: .5rem .625rem;
+    border-bottom: 1px solid var(--grid);
+    white-space: nowrap;
+  }
+  th { color: var(--text-muted); font-weight: 500; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; min-width: 9rem; }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-variant-numeric: tabular-nums; }
+
+  .meter { display: flex; align-items: center; gap: .5rem; justify-content: flex-end; }
+  .meter-track {
+    width: 4.5rem; height: 6px; flex: none;
+    background: var(--grid); border-radius: 3px; overflow: hidden;
+  }
+  /* display:block обязателен: у inline-элемента height не работает
+     и заливка просто не появляется */
+  .meter-fill { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
+
+  .empty { color: var(--text-muted); font-size: .875rem; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>SAT статистика</h1>
+    <div class="stamp"><span id="stamp">загрузка…</span><a href="/logout">Выйти</a></div>
+  </header>
+
+  <div id="content" class="hidden">
+    <div class="kpi" id="kpi"></div>
+
+    <section class="card">
+      <h2>Точность по дням</h2>
+      <div class="filters" id="trend-filters">
+        <button type="button" data-mode="all" aria-pressed="true">Всё вместе</button>
+        <button type="button" data-mode="sections" aria-pressed="false">По разделам</button>
+        <button type="button" class="linkish" id="toggle-table" aria-pressed="false">Показать таблицей</button>
+      </div>
+      <div class="plot">
+        <div id="chart"></div>
+        <div class="tooltip" id="tip"></div>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="scroll hidden" id="trend-table"></div>
+    </section>
+
+    <section class="card" id="sections-card">
+      <h2>Разделы</h2>
+      <div class="scroll" id="sections"></div>
+    </section>
+
+    <div class="cols">
+      <section class="card" id="speed-card">
+        <h2>Скорость</h2>
+        <div id="speed"></div>
+      </section>
+      <section class="card" id="results-card">
+        <h2>Результаты</h2>
+        <div id="results"></div>
+      </section>
+    </div>
+
+    <section class="card" id="books-card">
+      <h2>Книги и источники</h2>
+      <div class="scroll" id="books"></div>
+    </section>
+
+    <section class="card" id="topics-card">
+      <h2>Самые медленные темы</h2>
+      <div class="scroll" id="topics"></div>
+    </section>
+  </div>
+
+  <p id="message" class="empty">загрузка…</p>
+</main>
+
+<script>
+"use strict";
+
+const SERIES_VARS = ["--series-1", "--series-2"];
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+const el = (id) => document.getElementById(id);
+const nf = new Intl.NumberFormat("ru-RU");
+
+const fmtInt = (v) => (v == null ? "—" : nf.format(v));
+const fmtPct = (v) => (v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`);
+const fmtSec = (v) => (v == null ? "—" : `${v.toFixed(1).replace(".", ",")} с`);
+
+function fmtDate(iso, withYear) {
+  const [y, m, d] = iso.split("-");
+  return withYear ? `${d}.${m}.${y}` : `${d}.${m}`;
+}
+
+function escapeHtml(text) {
+  return String(text ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+/* Цвет закрепляется за разделом по имени, а не по месту в списке:
+   иначе смена порядка (он отсортирован по количеству вопросов)
+   перекрашивала бы ряды, и «Math был оранжевым» переставало быть правдой. */
+function sectionColors(names) {
+  const stable = [...names].sort((a, b) => a.localeCompare(b, "ru"));
+  const map = new Map();
+  stable.forEach((name, i) => map.set(name, cssVar(SERIES_VARS[i % SERIES_VARS.length])));
+  return map;
+}
+
+// ---------- график ----------
+
+const W = 760, H = 280, PAD = { t: 16, r: 60, b: 34, l: 46 };
+const PLOT_W = W - PAD.l - PAD.r;
+const PLOT_H = H - PAD.t - PAD.b;
+
+let chartState = null;
+
+function buildChart(series) {
+  const points = series[0]?.points ?? [];
+
+  if (points.length === 0) {
+    el("chart").innerHTML = '<p class="empty">Нет данных за период.</p>';
+    chartState = null;
+    return;
+  }
+
+  const n = points.length;
+  const x = (i) => PAD.l + (n === 1 ? PLOT_W / 2 : (i * PLOT_W) / (n - 1));
+
+  /* Ось подрезается снизу до ближайшей четверти под минимумом. Точность
+     редко падает ниже 70%, и при шкале от нуля весь график сплющивался бы
+     в верхнюю четверть. Подписи делений остаются круглыми и показывают,
+     где на самом деле начинается ось, так что подрез не вводит в заблуждение. */
+  const values = series.flatMap((s) => s.points.map((p) => p.accuracy)).filter((v) => v != null);
+  const floorTick = values.length ? Math.floor(Math.min(...values) / 0.25) * 0.25 : 0;
+  const yMin = Math.min(0.75, Math.max(0, floorTick));
+  const y = (v) => PAD.t + PLOT_H - ((v - yMin) / (1 - yMin)) * PLOT_H;
+
+  const ticks = [];
+  for (let t = yMin; t <= 1.0001; t += 0.25) ticks.push(Math.round(t * 100) / 100);
+
+  const surface = cssVar("--surface");
+  const parts = [];
+
+  // Горизонтальная сетка — сплошные волосяные линии, не пунктир
+  for (const tick of ticks) {
+    parts.push(
+      `<line x1="${PAD.l}" y1="${y(tick).toFixed(1)}" x2="${PAD.l + PLOT_W}" y2="${y(tick).toFixed(1)}"
+             stroke="var(--grid)" stroke-width="1" shape-rendering="crispEdges"/>`,
+      `<text x="${PAD.l - 10}" y="${(y(tick) + 4).toFixed(1)}" text-anchor="end"
+             font-size="11" fill="var(--text-muted)"
+             style="font-variant-numeric:tabular-nums">${tick * 100}%</text>`);
+  }
+
+  parts.push(`<line x1="${PAD.l}" y1="${PAD.t + PLOT_H}" x2="${PAD.l + PLOT_W}" y2="${PAD.t + PLOT_H}"
+                    stroke="var(--baseline)" stroke-width="1" shape-rendering="crispEdges"/>`);
+
+  // Подписи дат: максимум 6, чтобы не наезжали друг на друга
+  const step = Math.max(1, Math.ceil(n / 6));
+  for (let i = 0; i < n; i += step) {
+    parts.push(`<text x="${x(i).toFixed(1)}" y="${H - 12}" text-anchor="middle"
+                      font-size="11" fill="var(--text-muted)">${fmtDate(points[i].date)}</text>`);
+  }
+
+  // Линии рядов
+  for (const s of series) {
+    const drawable = s.points.map((p, i) => ({ i, v: p.accuracy })).filter((p) => p.v != null);
+    if (!drawable.length) continue;
+
+    const d = drawable.map((p, k) => `${k ? "L" : "M"}${x(p.i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(" ");
+    parts.push(`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2"
+                      stroke-linejoin="round" stroke-linecap="round"/>`);
+
+    const last = drawable[drawable.length - 1];
+    // Кольцо цветом поверхности, чтобы точка читалась поверх линии
+    parts.push(`<circle cx="${x(last.i).toFixed(1)}" cy="${y(last.v).toFixed(1)}" r="4.5"
+                        fill="${s.color}" stroke="${surface}" stroke-width="2"/>`);
+    s._end = { x: x(last.i), y: y(last.v), value: last.v };
+  }
+
+  // Подписи у конца линий — только если они не наезжают друг на друга.
+  // Сдвигать их вертикально нельзя: подпись оторвётся от своей линии.
+  const ends = series.filter((s) => s._end).map((s) => s._end.y).sort((a, b) => a - b);
+  const collide = ends.some((v, i) => i > 0 && v - ends[i - 1] < 14);
+
+  if (!collide) {
+    for (const s of series) {
+      if (!s._end) continue;
+      parts.push(`<text x="${(s._end.x + 10).toFixed(1)}" y="${(s._end.y + 4).toFixed(1)}"
+                        font-size="12" font-weight="600" fill="var(--text-secondary)"
+                        style="font-variant-numeric:tabular-nums">${fmtPct(s._end.value)}</text>`);
+    }
+  }
+
+  parts.push(`<line id="crosshair" y1="${PAD.t}" y2="${PAD.t + PLOT_H}" stroke="var(--baseline)"
+                    stroke-width="1" opacity="0" shape-rendering="crispEdges"/>`);
+  parts.push(`<rect id="hit" x="${PAD.l}" y="${PAD.t}" width="${PLOT_W}" height="${PLOT_H}" fill="transparent"/>`);
+
+  el("chart").innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Точность по дням">${parts.join("")}</svg>`;
+
+  chartState = { series, n, x, y };
+  attachHover();
+}
+
+function attachHover() {
+  const svg = el("chart").querySelector("svg");
+  const hit = el("hit");
+  const cross = el("crosshair");
+  const tip = el("tip");
+  if (!svg || !hit) return;
+
+  const move = (evt) => {
+    const box = svg.getBoundingClientRect();
+    const touch = evt.touches?.[0];
+    const scale = W / box.width;
+    const localX = ((touch ? touch.clientX : evt.clientX) - box.left) * scale;
+
+    const { n, x, y, series } = chartState;
+    let best = 0;
+    for (let i = 1; i < n; i++) {
+      if (Math.abs(x(i) - localX) < Math.abs(x(best) - localX)) best = i;
+    }
+
+    cross.setAttribute("x1", x(best));
+    cross.setAttribute("x2", x(best));
+    cross.setAttribute("opacity", "1");
+
+    const point = series[0].points[best];
+    const rows = series.map((s) => {
+      const p = s.points[best];
+      // Пропущенные показываем отдельно: они считаются как «не верно»,
+      // и без этого день, когда вопросы занесли но не решали, выглядит
+      // провалом результата, хотя результата в нём просто нет.
+      const skipped = p?.skipped ? `, ${fmtInt(p.skipped)} пропущ.` : "";
+      return `<div class="t-row"><span class="swatch" style="background:${s.color}"></span>
+              ${escapeHtml(s.name)} — <strong>${fmtPct(p?.accuracy)}</strong>
+              <span style="color:var(--text-muted)">${fmtInt(p?.questions)} вопр.${skipped}</span></div>`;
+    }).join("");
+
+    tip.innerHTML = `<div class="t-date">${fmtDate(point.date, true)}</div>${rows}`;
+    tip.classList.add("on");
+
+    const px = x(best) / scale;
+    const width = tip.offsetWidth;
+    tip.style.left = `${Math.max(0, Math.min(px - width / 2, box.width - width))}px`;
+    tip.style.top = "0px";
+  };
+
+  const leave = () => {
+    cross.setAttribute("opacity", "0");
+    tip.classList.remove("on");
+  };
+
+  hit.addEventListener("mousemove", move);
+  hit.addEventListener("mouseleave", leave);
+  hit.addEventListener("touchmove", move, { passive: true });
+  hit.addEventListener("touchend", leave);
+}
+
+// ---------- блоки ----------
+
+function renderKpi(kpi) {
+  const tiles = [
+    ["Всего вопросов", fmtInt(kpi.total_questions), false],
+    ["Точность", fmtPct(kpi.accuracy), false],
+    ["Среднее время", fmtSec(kpi.avg_time), false],
+    ["Медленных вопросов", fmtInt(kpi.slow_questions), false],
+    ["Главная зона роста", escapeHtml(kpi.focus_area) || "—", true],
+  ];
+
+  el("kpi").innerHTML = tiles.map(([label, value, isText]) =>
+    `<div class="tile"><div class="label">${label}</div>
+     <div class="value${isText ? " text" : ""}">${value}</div></div>`).join("");
+}
+
+function table(columns, rows) {
+  const head = columns.map((c) => `<th>${c.title}</th>`).join("");
+  const body = rows.map((row) =>
+    `<tr>${columns.map((c) => `<td class="${c.num ? "num" : ""}">${c.cell(row)}</td>`).join("")}</tr>`
+  ).join("");
+
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function meter(value) {
+  if (value == null) return "—";
+  const pct = Math.max(0, Math.min(1, value)) * 100;
+  return `<div class="meter"><span>${fmtPct(value)}</span>
+          <span class="meter-track"><span class="meter-fill" style="width:${pct.toFixed(1)}%"></span></span></div>`;
+}
+
+function renderSections(sections) {
+  el("sections").innerHTML = table([
+    { title: "Раздел", cell: (r) => escapeHtml(r.name) },
+    { title: "Вопросов", num: true, cell: (r) => fmtInt(r.questions) },
+    { title: "Верно", num: true, cell: (r) => fmtInt(r.correct) },
+    { title: "Пропущено", num: true, cell: (r) => fmtInt(r.skipped) },
+    { title: "Медленных", num: true, cell: (r) => fmtInt(r.slow) },
+    { title: "Ср. время", num: true, cell: (r) => fmtSec(r.avg_time) },
+    { title: "Точность", num: true, cell: (r) => meter(r.accuracy) },
+  ], sections);
+}
+
+function renderStack(target, items, total) {
+  if (!total) {
+    el(target).innerHTML = '<p class="empty">Нет данных.</p>';
+    return;
+  }
+
+  const bar = items.map((it) =>
+    `<div style="background:${it.color};flex:${it.count}" title="${escapeHtml(it.label)}: ${fmtInt(it.count)}"></div>`
+  ).join("");
+
+  const legend = items.map((it) =>
+    `<div class="legend-item"><span class="swatch" style="background:${it.color}"></span>
+     ${escapeHtml(it.label)} — <strong>${fmtInt(it.count)}</strong>
+     <span style="color:var(--text-muted)">${fmtPct(it.count / total)}</span></div>`
+  ).join("");
+
+  el(target).innerHTML = `<div class="stack">${bar}</div><div class="legend">${legend}</div>`;
+}
+
+const RESULT_COLORS = {
+  "Правильно": "--status-good",
+  "Неправильно": "--status-critical",
+  "Пропущено": "--status-neutral",
+};
+
+const SPEED_COLORS = {
+  "Быстро": "--speed-fast",
+  "В норме": "--speed-normal",
+  "Медленно": "--speed-slow",
+};
+
+// ---------- сборка ----------
+
+let payload = null;
+let trendMode = "all";
+
+function currentSeries() {
+  if (trendMode === "sections") {
+    const names = Object.keys(payload.daily_by_section ?? {});
+    const colors = sectionColors(names);
+    const dates = payload.daily.map((d) => d.date);
+
+    return names.slice(0, SERIES_VARS.length).map((name) => {
+      const byDate = new Map((payload.daily_by_section[name] ?? []).map((d) => [d.date, d]));
+      return {
+        name,
+        color: colors.get(name),
+        points: dates.map((date) => byDate.get(date) ?? { date, accuracy: null, questions: 0 }),
+      };
+    });
+  }
+
+  return [{ name: "Все разделы", color: cssVar("--series-1"), points: payload.daily ?? [] }];
+}
+
+function renderTrend() {
+  const series = currentSeries();
+  buildChart(series);
+
+  // Один ряд не нуждается в легенде — заголовок уже говорит, что нарисовано
+  el("legend").innerHTML = series.length < 2 ? "" : series.map((s) =>
+    `<div class="legend-item"><span class="swatch line" style="background:${s.color}"></span>
+     ${escapeHtml(s.name)}</div>`).join("");
+
+  el("trend-table").innerHTML = table([
+    { title: "Дата", cell: (r) => fmtDate(r.date, true) },
+    ...series.map((s) => ({
+      title: escapeHtml(s.name),
+      num: true,
+      cell: (r) => fmtPct(s.points.find((p) => p.date === r.date)?.accuracy),
+    })),
+    { title: "Вопросов", num: true, cell: (r) => fmtInt(r.questions) },
+  ], payload.daily ?? []);
+}
+
+function show(data, capturedAt) {
+  payload = data;
+
+  el("message").classList.add("hidden");
+  el("content").classList.remove("hidden");
+  el("stamp").textContent = capturedAt
+    ? `обновлено ${new Date(capturedAt).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}`
+    : "";
+
+  renderKpi(data.kpi ?? {});
+  renderTrend();
+
+  // Пустые блоки не рисуем вовсе, а не показываем ряды нулей
+  const toggle = (card, rows) => el(card).classList.toggle("hidden", !rows?.length);
+
+  toggle("sections-card", data.sections);
+  if (data.sections?.length) renderSections(data.sections);
+
+  toggle("speed-card", data.speed);
+  if (data.speed?.length) {
+    const items = data.speed.map((s) => ({
+      label: s.status, count: s.count, color: cssVar(SPEED_COLORS[s.status] ?? "--speed-normal"),
+    }));
+    renderStack("speed", items, items.reduce((a, b) => a + b.count, 0));
+  }
+
+  toggle("results-card", data.results);
+  if (data.results?.length) {
+    const items = data.results.map((r) => ({
+      label: r.result, count: r.count, color: cssVar(RESULT_COLORS[r.result] ?? "--status-neutral"),
+    }));
+    renderStack("results", items, items.reduce((a, b) => a + b.count, 0));
+  }
+
+  toggle("books-card", data.books);
+  if (data.books?.length) {
+    el("books").innerHTML = table([
+      { title: "Книга / источник", cell: (r) => escapeHtml(r.name) },
+      { title: "Вопросов", num: true, cell: (r) => fmtInt(r.questions) },
+      { title: "Верно", num: true, cell: (r) => fmtInt(r.correct) },
+      { title: "Медленных", num: true, cell: (r) => fmtInt(r.slow) },
+      { title: "Пропущено", num: true, cell: (r) => fmtInt(r.skipped) },
+      { title: "Ср. время", num: true, cell: (r) => fmtSec(r.avg_time) },
+      { title: "Точность", num: true, cell: (r) => meter(r.accuracy) },
+    ], data.books);
+  }
+
+  toggle("topics-card", data.slow_topics);
+  if (data.slow_topics?.length) {
+    el("topics").innerHTML = table([
+      { title: "Тема", cell: (r) => escapeHtml(r.topic) },
+      { title: "Раздел", cell: (r) => escapeHtml(r.section) },
+      { title: "Вопросов", num: true, cell: (r) => fmtInt(r.questions) },
+      { title: "Медленных", num: true, cell: (r) => fmtInt(r.slow) },
+      { title: "Ср. время", num: true, cell: (r) => fmtSec(r.avg_time) },
+      { title: "Точность", num: true, cell: (r) => meter(r.accuracy) },
+    ], data.slow_topics);
+  }
+}
+
+el("trend-filters").addEventListener("click", (evt) => {
+  const button = evt.target.closest("button");
+  if (!button) return;
+
+  if (button.id === "toggle-table") {
+    const shown = el("trend-table").classList.toggle("hidden");
+    button.setAttribute("aria-pressed", String(!shown));
+    button.textContent = shown ? "Показать таблицей" : "Скрыть таблицу";
+    return;
+  }
+
+  trendMode = button.dataset.mode;
+  for (const b of el("trend-filters").querySelectorAll("button[data-mode]")) {
+    b.setAttribute("aria-pressed", String(b === button));
+  }
+  renderTrend();
+});
+
+addEventListener("resize", () => { if (chartState) attachHover(); });
+
+(async () => {
+  try {
+    const response = await fetch("/api/summary", { credentials: "same-origin" });
+
+    if (response.status === 401 || response.status === 403) {
+      window.location.href = "/login";
+      return;
+    }
+
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+
+    const body = await response.json();
+
+    if (!body.data) {
+      el("stamp").textContent = "";
+      el("message").textContent =
+        "Данных пока нет: синхронизация с таблицей ещё не отработала. Обновите страницу через несколько минут.";
+      return;
+    }
+
+    show(body.data, body.captured_at);
+  } catch (e) {
+    el("stamp").textContent = "";
+    el("message").textContent = `Не удалось загрузить данные: ${e.message}`;
+  }
+})();
+</script>
+</body>
+</html>

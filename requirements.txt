@@ -1,3 +1,8 @@
 openai
 python-telegram-bot
-psycopg[binary]
+psycopg[binary,pool]
+itsdangerous
+fastapi
+uvicorn[standard]
+gspread
+google-auth

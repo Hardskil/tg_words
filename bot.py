@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import os
 
-import psycopg
 from openai import OpenAI
+from psycopg_pool import ConnectionPool
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 
@@ -37,8 +38,39 @@ def normalize_word(word: str) -> str:
     return " ".join(word.casefold().split())
 
 
+# Пул вместо соединения на каждый вызов: один пост открывал до пяти
+# коннектов, а с появлением второго сервиса общий лимит max_connections
+# у Postgres стал реальным ограничением.
+# timeout задан явно: в отличие от psycopg.connect(), который падал сразу,
+# пул ждёт свободного соединения. Ожидание полезно — на Railway Postgres
+# поднимается не мгновенно, — но дефолтные 30 секунд молчания при старте
+# слишком долгие, чтобы понять, что происходит.
+db_pool = ConnectionPool(
+    DATABASE_URL, min_size=1, max_size=5, timeout=15, name="bot", open=False
+)
+
+
 def get_db_connection():
-    return psycopg.connect(DATABASE_URL)
+    """Соединение из пула. На выходе транзакция коммитится, как и раньше."""
+    return db_pool.connection()
+
+
+# Отдельный мьютекс на чат. Раньше блокирующий I/O случайно выстраивал
+# обработку в очередь; теперь вызовы ушли в потоки, и без него два
+# одновременных «!v слово» прошли бы проверку дубля оба и создали две карточки.
+_chat_locks: dict[int, asyncio.Lock] = {}
+
+
+def get_chat_lock(chat_id: int) -> asyncio.Lock:
+    # Гонки при создании самого лока нет: функция синхронная, между
+    # чтением и записью нет await, а event loop однопоточный.
+    lock = _chat_locks.get(chat_id)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        _chat_locks[chat_id] = lock
+
+    return lock
 
 
 def init_db() -> None:
@@ -222,7 +254,10 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not message or not message.text or not chat:
         return
 
-    save_chat_info(chat)
+    # Запросы к БД и к OpenAI синхронные и блокирующие. Вызванные напрямую,
+    # они останавливали весь event loop — пока ждали модель, бот не обрабатывал
+    # вообще ничего. Поэтому каждый уходит в отдельный поток.
+    await asyncio.to_thread(save_chat_info, chat)
 
     chat_id = chat.id
     text = message.text.strip()
@@ -231,7 +266,8 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
         normalized_text = normalize_word(text)
 
         if normalized_text:
-            save_word(
+            await asyncio.to_thread(
+                save_word,
                 normalized_word=normalized_text,
                 word=text,
                 message_id=message.message_id,
@@ -246,75 +282,100 @@ async def handle_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not word:
         return
 
-    normalized_word = normalize_word(word)
-    existing_word = find_word(normalized_word, chat_id)
+    # Обработка «!v» под замком: проверка дубля и запись должны быть неделимы.
+    async with get_chat_lock(chat_id):
+        normalized_word = normalize_word(word)
+        existing_word = await asyncio.to_thread(find_word, normalized_word, chat_id)
 
-    if existing_word:
-        display_word, old_message_id = existing_word
+        if existing_word:
+            display_word, old_message_id = existing_word
 
-        await delete_message(message)
+            await delete_message(message)
 
-        try:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"Слово «{display_word}» уже есть в списке.",
+                    reply_to_message_id=old_message_id,
+                    allow_sending_without_reply=False,
+                )
+                return
+
+            except Exception as e:
+                print(f"Старое сообщение не найдено, удаляю слово из БД: {e}")
+                await asyncio.to_thread(delete_word, normalized_word, chat_id)
+
+        data = await asyncio.to_thread(ai_process, word)
+
+        if not data:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"Слово «{display_word}» уже есть в списке.",
-                reply_to_message_id=old_message_id,
-                allow_sending_without_reply=False,
+                text="Не удалось обработать слово через AI.",
             )
             return
 
-        except Exception as e:
-            print(f"Старое сообщение не найдено, удаляю слово из БД: {e}")
-            delete_word(normalized_word, chat_id)
-
-    data = ai_process(word)
-
-    if not data:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="Не удалось обработать слово через AI.",
+        result_text = (
+            f"#vocabболь\n\n"
+            f"📌 {data['word']} — {data['translation']}\n\n"
+            f"Definition: {data['definition']}\n"
+            f"Перевод: {data['definition_ru']}"
         )
-        return
 
-    result_text = (
-        f"#vocabболь\n\n"
-        f"📌 {data['word']} — {data['translation']}\n\n"
-        f"Definition: {data['definition']}\n"
-        f"Перевод: {data['definition_ru']}"
-    )
+        await delete_message(message)
 
-    await delete_message(message)
+        sent_message = await context.bot.send_message(
+            chat_id=chat_id,
+            text=result_text,
+        )
 
-    sent_message = await context.bot.send_message(
-        chat_id=chat_id,
-        text=result_text,
-    )
+        await asyncio.to_thread(
+            save_word,
+            normalized_word=normalized_word,
+            word=data["word"],
+            message_id=sent_message.message_id,
+            chat_id=chat_id,
+            source="bot_vocab",
+        )
 
-    save_word(
-        normalized_word=normalized_word,
-        word=data["word"],
-        message_id=sent_message.message_id,
-        chat_id=chat_id,
-        source="bot_vocab",
-    )
-
-    save_word(
-        normalized_word=normalize_word(data["word"]),
-        word=data["word"],
-        message_id=sent_message.message_id,
-        chat_id=chat_id,
-        source="bot_vocab",
-    )
+        await asyncio.to_thread(
+            save_word,
+            normalized_word=normalize_word(data["word"]),
+            word=data["word"],
+            message_id=sent_message.message_id,
+            chat_id=chat_id,
+            source="bot_vocab",
+        )
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Ошибка при обработке update:", exc_info=context.error)
 
 
+async def start_sat_sync(application) -> None:
+    """Запускает фоновую синхронизацию SAT-витрины.
+
+    Импорт внутри функции и широкий except — намеренно: витрина не должна
+    мешать словарю. Если пакет sat не настроен или Google недоступен,
+    бот обязан продолжить работу как обычно.
+    """
+    try:
+        from sat.sync import start
+
+        start()
+        logger.info("Синхронизация SAT-витрины запущена")
+    except Exception:
+        logger.exception("Синхронизация SAT не запустилась, словарь работает как обычно")
+
+
 def main() -> None:
+    # Пул создан с open=False, чтобы импорт модуля не лез в базу.
+    db_pool.open()
+
     init_db()
 
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    # post_init, а не вызов до run_polling: таск нужно создавать
+    # внутри уже работающего event loop.
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(start_sat_sync).build()
 
     app.add_handler(
         MessageHandler(filters.TEXT & filters.ChatType.CHANNEL, handle_channel_post)
