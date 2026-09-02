@@ -116,8 +116,35 @@
 
   h1 { margin: 0; font-size: 1.375rem; letter-spacing: -.01em; }
 
-  .stamp { color: var(--text-muted); font-size: .8125rem; }
-  .stamp a { color: var(--text-muted); margin-left: .75rem; }
+  .stamp {
+    color: var(--text-muted); font-size: .8125rem;
+    /* Строка состояния растёт: «обновлено … · данные обновлены · зона роста …».
+       Без переноса она вытолкнула бы кнопку за край на узком экране. */
+    display: flex; align-items: center; flex-wrap: wrap; gap: .375rem .75rem;
+  }
+  .stamp a { color: var(--text-muted); }
+
+  #refresh {
+    font: inherit; font-size: .8125rem;
+    display: inline-flex; align-items: center; gap: .4rem;
+    padding: .25rem .625rem;
+    border: 1px solid var(--border); border-radius: 999px;
+    background: transparent; color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease),
+                color var(--dur-fast) var(--ease);
+  }
+  #refresh:hover:not(:disabled) { border-color: var(--text-muted); color: var(--text-primary); }
+  #refresh:disabled { cursor: default; opacity: .6; }
+
+  #refresh svg { width: .875rem; height: .875rem; display: block; }
+  /* Крутится только пока идёт запрос — иначе это просто мельтешение */
+  #refresh[data-busy] svg { animation: spin 1s linear infinite; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .flash { animation: flash 1.4s var(--ease); }
+  @keyframes flash { 0%, 60% { color: var(--status-good); } }
 
   h2 {
     margin: 0 0 1rem;
@@ -322,7 +349,17 @@
 <main>
   <header>
     <h1>SAT статистика</h1>
-    <div class="stamp"><span id="stamp">загрузка…</span><a href="/logout">Выйти</a></div>
+    <div class="stamp">
+      <span id="stamp">загрузка…</span>
+      <button type="button" id="refresh" hidden title="Перечитать таблицу заново">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/>
+        </svg>
+        <span id="refresh-label">Обновить</span>
+      </button>
+      <a href="/logout">Выйти</a>
+    </div>
   </header>
 
   <div id="content" class="hidden">
@@ -969,45 +1006,140 @@ el("trend-filters").addEventListener("click", (evt) => {
 
 // ---------- загрузка ----------
 
-(async () => {
-  try {
-    const response = await fetch("/api/summary", { credentials: "same-origin" });
+// ---------- загрузка и обновление ----------
 
-    if (response.status === 401 || response.status === 403) {
-      window.location.href = "/login";
-      return;
+const REDIRECTED = "redirected";
+
+let firstLoad = true;
+
+async function callApi(path, options) {
+  const response = await fetch(path, { credentials: "same-origin", ...options });
+
+  if (response.status === 401 || response.status === 403) {
+    window.location.href = "/login";
+    throw new Error(REDIRECTED);
+  }
+
+  const body = await response.json().catch(() => null);
+
+  // detail приходит от сервера и объясняет причину человеку: какой
+  // переменной не хватает, что ответил Google. Терять его нельзя.
+  if (!response.ok) {
+    throw new Error(body?.detail || `${response.status} ${response.statusText}`);
+  }
+
+  return body;
+}
+
+function setStamp(capturedAt, note) {
+  const focus = state.data?.kpi?.focus_area;
+  const when = capturedAt
+    ? `обновлено ${new Date(capturedAt).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}`
+    : "";
+
+  el("stamp").textContent = [when, note, focus && `зона роста: ${focus}`]
+    .filter(Boolean).join(" · ");
+}
+
+/* После обновления набор строк мог измениться. Фильтр на исчезнувшее
+   значение дал бы пустую страницу без внятной причины, поэтому такие
+   условия снимаем молча. */
+function pruneFilters() {
+  for (const dim of DIMS) {
+    const value = state.filters[dim];
+
+    if (value != null && !state.data.rows.some((row) => row[dim] === value)) {
+      delete state.filters[dim];
     }
+  }
+}
 
-    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+function applySnapshot(body, note) {
+  state.data = body.data;
+  pruneFilters();
 
-    const body = await response.json();
+  el("message").classList.add("hidden");
+  el("content").classList.remove("hidden");
+  el("refresh").hidden = false;
 
-    if (!body.data?.rows?.length) {
-      el("stamp").textContent = "";
-      el("message").textContent = body.data
-        ? "Журнал пуст — в таблице нет строк с вопросами."
-        : "Данных пока нет: синхронизация с таблицей ещё не отработала. Обновите страницу через несколько минут.";
-      return;
-    }
-
-    state.data = body.data;
-
-    el("message").classList.add("hidden");
-    el("content").classList.remove("hidden");
-
+  if (firstLoad) {
     // Класс появления снимаем после проигрыша: иначе блоки заново
     // выезжали бы при каждом пересчёте по фильтру, и это утомляло бы.
     el("content").classList.add("intro");
     setTimeout(() => el("content").classList.remove("intro"), 900);
+    firstLoad = false;
+  }
 
-    const focus = body.data.kpi?.focus_area;
-    el("stamp").textContent =
-      (body.captured_at
-        ? `обновлено ${new Date(body.captured_at).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" })}`
-        : "") + (focus ? ` · зона роста: ${focus}` : "");
+  setStamp(body.captured_at, note);
+  render();
+}
 
-    render();
+function showEmpty(body) {
+  el("stamp").textContent = "";
+  el("message").textContent = body.data
+    ? "Журнал пуст — в таблице нет строк с вопросами."
+    : "Данных пока нет: синхронизация с таблицей ещё не отработала.";
+  // Кнопку показываем и тут: именно в этом состоянии она нужнее всего,
+  // иначе остаётся только ждать десять минут до тика воркера.
+  el("refresh").hidden = false;
+}
+
+function flashStamp() {
+  const node = el("stamp");
+  node.classList.remove("flash");
+  void node.offsetWidth;  // перезапуск анимации: без этого класс не сыграет заново
+  node.classList.add("flash");
+}
+
+async function refresh() {
+  const button = el("refresh");
+
+  if (button.disabled) return;
+
+  button.disabled = true;
+  button.dataset.busy = "1";
+  el("refresh-label").textContent = "Читаю таблицу…";
+
+  try {
+    const body = await callApi("/api/refresh", { method: "POST" });
+
+    if (!body.data?.rows?.length) {
+      showEmpty(body);
+      return;
+    }
+
+    /* «Изменений нет» — это результат, а не сбой: значит таблицу с прошлого
+       раза не правили. Молчать нельзя, иначе кнопка выглядит сломанной. */
+    const note = body.skipped ? "только что обновляли"
+      : body.changed ? "данные обновлены"
+        : "изменений нет";
+
+    applySnapshot(body, note);
+    flashStamp();
   } catch (e) {
+    if (e.message === REDIRECTED) return;
+    setStamp(null, `не удалось обновить: ${e.message}`);
+  } finally {
+    delete button.dataset.busy;
+    button.disabled = false;
+    el("refresh-label").textContent = "Обновить";
+  }
+}
+
+el("refresh").addEventListener("click", refresh);
+
+(async () => {
+  try {
+    const body = await callApi("/api/summary");
+
+    if (!body.data?.rows?.length) {
+      showEmpty(body);
+      return;
+    }
+
+    applySnapshot(body);
+  } catch (e) {
+    if (e.message === REDIRECTED) return;
     el("stamp").textContent = "";
     el("message").textContent = `Не удалось загрузить данные: ${e.message}`;
   }

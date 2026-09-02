@@ -8,6 +8,7 @@
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from fastapi.responses import (
     Response,
 )
 
-from sat import auth, config, db
+from sat import auth, config, db, sheets
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -40,6 +41,14 @@ COOKIE_NAME = "sat_session"
 # Витрина всегда персональная и меняется при каждом синке — кэшировать нечего,
 # а закэшированная браузером страница пережила бы отписку от канала.
 NO_STORE = {"Cache-Control": "no-store"}
+
+# Ручное обновление ходит в Google, а у Sheets API квота 60 запросов
+# в минуту на пользователя. Витрину смотрит любой подписчик, так что
+# без паузы несколько человек с кнопкой выбрали бы лимит за полминуты.
+REFRESH_COOLDOWN = 20
+
+_refresh_lock = asyncio.Lock()
+_refreshed_at = 0.0
 
 
 @asynccontextmanager
@@ -191,12 +200,54 @@ async def api_summary(session: dict = Depends(require_subscriber)) -> dict:
     Пустой результат — не ошибка: синк мог ещё ни разу не отработать.
     Отдаём null, чтобы фронтенд показал состояние «данных пока нет».
     """
-    snapshot = await asyncio.to_thread(db.latest_snapshot)
+    return _snapshot_body(await asyncio.to_thread(db.latest_snapshot))
 
+
+def _snapshot_body(snapshot: dict | None, **extra) -> dict:
     if snapshot is None:
-        return {"captured_at": None, "data": None}
+        return {"captured_at": None, "data": None, **extra}
 
-    return {"captured_at": snapshot["captured_at"], "data": snapshot["payload"]}
+    return {"captured_at": snapshot["captured_at"], "data": snapshot["payload"], **extra}
+
+
+@app.post("/api/refresh")
+async def api_refresh(session: dict = Depends(require_subscriber)) -> dict:
+    """Перечитать таблицу прямо сейчас.
+
+    Воркер синхронизирует раз в десять минут; кнопка нужна, чтобы увидеть
+    только что внесённую правку, не дожидаясь тика.
+
+    Замок обязателен: без него два одновременных нажатия дали бы два
+    параллельных похода в Google и две попытки записать один и тот же
+    снапшот.
+    """
+    global _refreshed_at
+
+    async with _refresh_lock:
+        since = time.monotonic() - _refreshed_at
+
+        if since < REFRESH_COOLDOWN:
+            # Кто-то только что обновил. Отдаём его результат вместо отказа:
+            # данные всё равно свежие, а ошибка тут была бы враньём.
+            logger.info("Обновление пропущено, свежее было %.0f с назад", since)
+            snapshot = await asyncio.to_thread(db.latest_snapshot)
+            return _snapshot_body(snapshot, changed=False, skipped=True)
+
+        try:
+            payload = await asyncio.to_thread(sheets.fetch_summary)
+        except config.ConfigError:
+            raise  # обработается отдельно и скажет, какой переменной нет
+        except Exception as e:
+            logger.exception("Ручное обновление не удалось")
+            raise HTTPException(
+                status_code=502, detail=f"Не удалось прочитать таблицу: {e}"
+            ) from None
+
+        changed = await asyncio.to_thread(db.store_if_changed, payload)
+        _refreshed_at = time.monotonic()
+
+    snapshot = await asyncio.to_thread(db.latest_snapshot)
+    return _snapshot_body(snapshot, changed=changed, skipped=False)
 
 
 @app.get("/api/history")
